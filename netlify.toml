@@ -2,8 +2,9 @@
   command = "npm run build"
   publish = "dist"
 
-# Serve index.html for any path so a refresh on a deep link doesn't 404.
+# SPA fallback: unknown paths under /trombone/ serve the app so a deep link
+# (if routing is ever added) survives a refresh instead of 404ing.
 [[redirects]]
-  from = "/*"
-  to = "/index.html"
+  from = "/trombone/*"
+  to = "/trombone/index.html"
   status = 200
