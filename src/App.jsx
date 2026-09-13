@@ -18,6 +18,10 @@ const midiToFreq = (m, a4) => a4 * Math.pow(2, (m - 69) / 12);
 const BB_FUNDAMENTAL_MIDI = 34; // Bb1, the pedal in 1st position (open horn)
 const F_FUNDAMENTAL_MIDI = 29;  // F1, the pedal with the valve engaged
 const MAX_PARTIAL = 12;
+const MAX_POSITION = 7;
+// Partials further than this from an equal-tempered note (the 7th and 11th)
+// are alternates in the standard position chart, not the default fingering.
+const IN_TUNE_CENTS = 20;
 const ORDINAL = (n) => n + (["th", "st", "nd", "rd"][((n % 100) - 20) % 10] || ["th", "st", "nd", "rd"][n % 100] || "th");
 
 function analyseNote(targetMidi, { a4, effLength, maxExt, trigger }) {
@@ -33,17 +37,20 @@ function analyseNote(targetMidi, { a4, effLength, maxExt, trigger }) {
   for (let n = 1; n <= MAX_PARTIAL; n++) {
     const fOpen = n * f1;
     const centsBelowOpen = 1200 * Math.log2(fOpen / fTarget);
-    // Anything more than half a semitone above 1st position can't be reached
-    // even by lipping; anything below the furthest playable position likewise.
+    // Anything more than 60¢ above 1st position can't be reached even by
+    // lipping; anything well past the furthest playable position likewise.
     if (centsBelowOpen < -60) continue;
     const ratio = fOpen / fTarget;
     const ext = (L0 * (ratio - 1)) / 2;
     if (ext > maxExt + 0.06) continue;
 
-    const position = Math.max(1, Math.round(centsBelowOpen / 100) + 1);
+    const position = Math.min(MAX_POSITION, Math.max(1, Math.round(centsBelowOpen / 100) + 1));
     const deltaCents = centsBelowOpen - 100 * (position - 1);
     const deltaCm = (ext - nominalExt(position)) * 100;
     const reachable = ext >= -1e-6 && ext <= maxExt;
+    // A note just past the end of the slide is often only a few cents sharp
+    // there, which is lippable, so report the shortfall in cents as well.
+    const centsSharpAtMax = ext > maxExt ? 1200 * Math.log2((L0 + 2 * ext) / (L0 + 2 * maxExt)) : 0;
     candidates.push({
       partial: n,
       openNote: midiToName(fundMidi + Math.round(12 * Math.log2(n))),
@@ -52,6 +59,7 @@ function analyseNote(targetMidi, { a4, effLength, maxExt, trigger }) {
       deltaCents,
       deltaCm,
       reachable,
+      centsSharpAtMax,
     });
   }
   return { candidates, nominalExt, L0, fTarget };
@@ -112,7 +120,7 @@ function playTone(freq, startAt, duration, gain = 0.25) {
 const PX_PER_CM = 4.4;
 const CROOK_TIP_CLOSED = 434; // x of the outer-slide crook when fully in
 
-function TromboneSVG({ extCm, nominalExtCm, candidate, colors, reachable }) {
+function TromboneSVG({ extCm, nominalExtCm, candidate, colors, reachable, positionLabel }) {
   const e = Math.max(-12, Math.min(72, extCm)) * PX_PER_CM;
   const { brass, silver, ink, muted, warn, bg } = colors;
 
@@ -149,7 +157,7 @@ function TromboneSVG({ extCm, nominalExtCm, candidate, colors, reachable }) {
           <g key={i} transform={`translate(${CROOK_TIP_CLOSED + cm * PX_PER_CM} 248)`}>
             <line y1="-6" y2="6" stroke={i + 1 === candidate?.position ? ink : muted} strokeWidth={i + 1 === candidate?.position ? 2 : 1} />
             <text y="24" textAnchor="middle" fontSize="14" fill={i + 1 === candidate?.position ? ink : muted}>
-              {i + 1}
+              {positionLabel(i + 1)}
             </text>
           </g>
         ) : null,
@@ -183,7 +191,7 @@ function BassStaffSVG({ midi, colors }) {
   for (let s = BOTTOM_LINE_STEP + 10; s <= step; s += 2) ledger.push(s);
 
   return (
-    <svg viewBox="0 0 200 170" className="w-full" role="img" aria-label={`${midiToName(midi)} on a bass clef staff`}>
+    <svg viewBox="0 0 200 184" className="w-full" role="img" aria-label={`${midiToName(midi)} on a bass clef staff`}>
       {[0, 1, 2, 3, 4].map((i) => (
         <line key={i} x1="10" x2="190" y1={yOf(BOTTOM_LINE_STEP + 2 * i)} y2={yOf(BOTTOM_LINE_STEP + 2 * i)} stroke={muted} strokeWidth="1" />
       ))}
@@ -201,7 +209,8 @@ function BassStaffSVG({ midi, colors }) {
         </text>
       )}
       <ellipse cx={noteX} cy={yOf(step)} rx="6.5" ry="4.4" transform={`rotate(-20 ${noteX} ${yOf(step)})`} fill="none" stroke={ink} strokeWidth="2.6" />
-      <text x="190" y="160" textAnchor="end" fontSize="11" fill={muted}>
+      {/* Kept below the lowest pedal (C1, five ledger lines down) so it never overlaps the note. */}
+      <text x="190" y="178" textAnchor="end" fontSize="11" fill={muted}>
         {midiToName(midi)} · bass clef
       </text>
     </svg>
@@ -210,8 +219,12 @@ function BassStaffSVG({ midi, colors }) {
 
 // The partial table is computed rather than typed so it can't drift from the
 // model that drives the rest of the page.
-function HowItWorks({ colors, effLength, nominalExtCm }) {
+function HowItWorks({ colors, effLength }) {
   const { brass, muted, panel } = colors;
+  // The explanation always describes the open horn, whatever the valve
+  // setting, so these are derived from effLength rather than the live series.
+  const openExtCm = (p) => (effLength * (Math.pow(2, (p - 1) / 12) - 1) * 100) / 2;
+  const triggerExtCm = (p) => openExtCm(p) * Math.pow(2, 5 / 12);
   const partials = Array.from({ length: MAX_PARTIAL }, (_, i) => {
     const n = i + 1;
     const semis = 12 * Math.log2(n);
@@ -230,7 +243,7 @@ function HowItWorks({ colors, effLength, nominalExtCm }) {
 
       <p>
         The catch is that the harmonic series and the equal-tempered scale don't line up. Some partials fall very close to a
-        scale note (2, 3, 4, 6, 8, 12); others miss by an amount you can hear. Those misses carry over to every slide
+        scale note (2, 3, 4, 6, 8, 9, 12); others miss by an amount you can hear. Those misses carry over to every slide
         position, which is why a note like D4 needs the slide slightly in or out depending on which partial you play it on:
       </p>
 
@@ -274,7 +287,7 @@ function HowItWorks({ colors, effLength, nominalExtCm }) {
       <p>
         <strong>Where the centimetres come from.</strong> Lowering a pitch by <em>n</em> semitones requires the effective tube
         length to grow by a factor of 2<sup>n/12</sup>, so positions get farther apart as you go out: the distance from 1st to
-        2nd is about {nominalExtCm[1].toFixed(1)} cm, but from 6th to 7th it's {(nominalExtCm[6] - nominalExtCm[5]).toFixed(1)} cm.
+        2nd is about {openExtCm(2).toFixed(1)} cm, but from 6th to 7th it's {(openExtCm(7) - openExtCm(6)).toFixed(1)} cm.
         The slide is a U, so moving your hand 1 cm adds 2 cm of tubing. For a chosen note and partial the app solves for the
         exact length, converts it to hand travel, and reports both the total extension and the difference from the nearest
         equal-tempered mark, in centimetres and cents.
@@ -283,15 +296,16 @@ function HowItWorks({ colors, effLength, nominalExtCm }) {
       <p>
         <strong>Effective length.</strong> The {effLength.toFixed(2)} m used here is the <em>acoustic</em> length of the open
         horn, which is what actually fixes the partial frequencies. It's a bit longer than the physical tubing (roughly 2.75 m
-        on a tenor) because the bell flare makes the instrument behave as though it were longer. This value sets the spacing
+        on a tenor) because the bell and mouthpiece make the instrument behave as though it were longer. This value sets the spacing
         of every position, which is why it's adjustable: if your 7th sits at 59 cm rather than 61, lower it slightly.
       </p>
 
       <p>
         <strong>F attachment.</strong> Engaging the valve adds tubing that drops the fundamental a fourth to F1, which
         multiplies the effective length by 2<sup>5/12</sup> ≈ 1.33. The whole position map stretches by the same factor, so
-        trigger positions are wider apart and only six fit on the slide. The app recomputes everything from the F series when
-        the valve is engaged.
+        trigger positions are wider apart and only six fit on the slide: T6 (low C) sits at about {triggerExtCm(6).toFixed(1)} cm,
+        right at the end, and a T7 (low B) would need about {triggerExtCm(7).toFixed(0)} cm. The app recomputes everything from the
+        F series when the valve is engaged.
       </p>
 
       <p style={{ color: muted }}>
@@ -316,7 +330,8 @@ const COLORS = {
   warn: "#C97B7B",
 };
 
-const LOWEST_MIDI = 28; // E1, the lowest pedal in 7th position
+const LOWEST_OPEN_MIDI = 28; // E1, the lowest pedal in 7th position
+const LOWEST_TRIGGER_MIDI = 24; // C1, the pedal in T6
 const HIGHEST_MIDI = 77; // F5, 12th partial in 1st
 
 export default function TromboneSlideSimulator() {
@@ -324,7 +339,7 @@ export default function TromboneSlideSimulator() {
   const [partial, setPartial] = useState(null);
   const [a4, setA4] = useState(440);
   const [effLength, setEffLength] = useState(2.94);
-  const [maxExtCm, setMaxExtCm] = useState(65);
+  const [maxExtCm, setMaxExtCm] = useState(67);
   const [trigger, setTrigger] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHow, setShowHow] = useState(false);
@@ -332,11 +347,14 @@ export default function TromboneSlideSimulator() {
   const params = { a4, effLength, maxExt: maxExtCm / 100, trigger };
   const { candidates, nominalExt, fTarget } = useMemo(() => analyseNote(midi, params), [midi, a4, effLength, maxExtCm, trigger]);
 
-  // Follow the user's chosen partial when it exists for this note; otherwise
-  // default to the lowest-numbered reachable partial, which is the most common
-  // "textbook" position.
+  // Follow the user's chosen partial when it exists for this note. Otherwise
+  // default to the lowest reachable partial that sits close to equal
+  // temperament, which is what the standard position chart does (G4 is 4th on
+  // the 8th partial, not a short 2nd on the 7th). Fall back to anything
+  // reachable, then to anything at all so an out-of-reach note is still shown.
   const chosen =
     candidates.find((c) => c.partial === partial) ??
+    candidates.find((c) => c.reachable && Math.abs(c.deltaCents) < IN_TUNE_CENTS) ??
     candidates.find((c) => c.reachable) ??
     candidates[0] ??
     null;
@@ -368,15 +386,27 @@ export default function TromboneSlideSimulator() {
     withBusy("compare", 3.9);
   };
 
-  const nominalExtCm = Array.from({ length: 7 }, (_, i) => nominalExt(i + 1) * 100);
+  const nominalExtCm = Array.from({ length: MAX_POSITION }, (_, i) => nominalExt(i + 1) * 100);
   const noteName = midiToName(midi);
   const fmt = (x, d = 1) => x.toFixed(d);
+  const posLabel = (p) => (trigger ? `T${p}` : `${ORDINAL(p)} position`);
+  const lowestMidi = trigger ? LOWEST_TRIGGER_MIDI : LOWEST_OPEN_MIDI;
+
+  // An emptied number field parses to 0, which would push NaN through the
+  // whole model, so such edits are ignored and the field keeps its last value.
+  const setPositive = (set) => (e) => {
+    const v = Number(e.target.value);
+    if (Number.isFinite(v) && v > 0) set(v);
+  };
 
   const inOut = (cm) => (Math.abs(cm) < 0.05 ? "exactly on the mark" : `${fmt(Math.abs(cm))} cm ${cm > 0 ? "out" : "in"}`);
 
   const rowStyle = (c) => ({
     background: c === chosen ? COLORS.panel : "transparent",
     borderLeft: `3px solid ${c === chosen ? COLORS.brass : "transparent"}`,
+    // divide-y draws the rule on each row, so its colour has to be set here;
+    // a border colour on the list container never reaches the rows.
+    borderBottomColor: COLORS.panel,
     opacity: c.reachable ? 1 : 0.6,
   });
 
@@ -401,6 +431,7 @@ export default function TromboneSlideSimulator() {
           candidate={chosen}
           colors={COLORS}
           reachable={chosen?.reachable}
+          positionLabel={(p) => (trigger ? `T${p}` : String(p))}
         />
 
         {/* Headline readout */}
@@ -409,9 +440,7 @@ export default function TromboneSlideSimulator() {
             <>
               <div className="text-xl">
                 <span style={{ color: COLORS.brass }}>{noteName}</span> on the {ORDINAL(chosen.partial)} partial:{" "}
-                {trigger ? "T" : ""}
-                {chosen.position}
-                {ORDINAL(chosen.position).slice(-2)} position, {inOut(chosen.deltaCm)}
+                {posLabel(chosen.position)}, {inOut(chosen.deltaCm)}
                 {Math.abs(chosen.deltaCents) >= 0.5 && (
                   <span style={{ color: COLORS.muted }}>
                     {" "}
@@ -425,7 +454,9 @@ export default function TromboneSlideSimulator() {
                   ? `Slide ${fmt(chosen.ext * 100)} cm out from fully closed · ${fmt(fTarget, 1)} Hz`
                   : chosen.ext < 0
                     ? `Needs the slide ${fmt(-chosen.ext * 100)} cm inside 1st position — you'd have to lip it up ${fmt(-chosen.deltaCents, 0)}¢, or pick another partial.`
-                    : `Needs ${fmt(chosen.ext * 100)} cm of slide, past the ${maxExtCm} cm you have.`}
+                    : `Needs ${fmt(chosen.ext * 100)} cm of slide, past the ${maxExtCm} cm you have — at the end of the slide it'd be ${
+                        chosen.centsSharpAtMax < 0.5 ? "under 1" : fmt(chosen.centsSharpAtMax, 0)
+                      }¢ sharp, so lip it down or pick another partial.`}
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -466,7 +497,7 @@ export default function TromboneSlideSimulator() {
             </div>
             <div className="mb-2 flex items-center gap-3">
               <button
-                onClick={() => setMidi((m) => Math.max(LOWEST_MIDI, m - 1))}
+                onClick={() => setMidi((m) => Math.max(lowestMidi, m - 1))}
                 className="rounded px-3 py-1 text-lg focus:outline-none focus:ring-2"
                 style={{ background: COLORS.panel, color: COLORS.ink }}
                 aria-label="Semitone down"
@@ -485,7 +516,7 @@ export default function TromboneSlideSimulator() {
             </div>
             <input
               type="range"
-              min={LOWEST_MIDI}
+              min={lowestMidi}
               max={HIGHEST_MIDI}
               value={midi}
               onChange={(e) => setMidi(Number(e.target.value))}
@@ -494,7 +525,7 @@ export default function TromboneSlideSimulator() {
               aria-label="Note"
             />
             <div className="mt-1 flex justify-between text-xs" style={{ color: COLORS.muted }}>
-              <span>{midiToName(LOWEST_MIDI)}</span>
+              <span>{midiToName(lowestMidi)}</span>
               <span>{midiToName(HIGHEST_MIDI)}</span>
             </div>
 
@@ -502,7 +533,7 @@ export default function TromboneSlideSimulator() {
               {[Math.floor(midi / 12) * 12 - 12, Math.floor(midi / 12) * 12, Math.floor(midi / 12) * 12 + 12].flatMap((base) =>
                 Array.from({ length: 12 }, (_, i) => base + i),
               )
-                .filter((m) => m >= LOWEST_MIDI && m <= HIGHEST_MIDI)
+                .filter((m) => m >= lowestMidi && m <= HIGHEST_MIDI)
                 .map((m) => (
                   <button
                     key={m}
@@ -524,7 +555,7 @@ export default function TromboneSlideSimulator() {
             <p className="mb-2 text-sm" style={{ color: COLORS.muted }}>
               Every partial that can reach {noteName}. Pick one to see its slide position.
             </p>
-            <div className="divide-y" style={{ borderColor: COLORS.panel }}>
+            <div className="divide-y">
               {candidates.map((c) => (
                 <button
                   key={c.partial}
@@ -536,11 +567,10 @@ export default function TromboneSlideSimulator() {
                     {ORDINAL(c.partial)}
                   </span>
                   <span>
-                    {trigger ? "T" : ""}
-                    {c.position}
-                    {ORDINAL(c.position).slice(-2)} position, {inOut(c.deltaCm)}
+                    {posLabel(c.position)}, {inOut(c.deltaCm)}
                     <span className="block text-xs" style={{ color: COLORS.muted }}>
-                      partial is {c.openNote} in 1st{Math.abs(c.deltaCents) >= 0.5 ? ` · ${c.deltaCents > 0 ? "+" : "−"}${fmt(Math.abs(c.deltaCents), 0)}¢` : ""}
+                      partial is {c.openNote} in {trigger ? "T1" : "1st"}
+                      {Math.abs(c.deltaCents) >= 0.5 ? ` · ${c.deltaCents > 0 ? "+" : "−"}${fmt(Math.abs(c.deltaCents), 0)}¢` : ""}
                       {!c.reachable && <span style={{ color: COLORS.warn }}> · out of reach</span>}
                     </span>
                   </span>
@@ -556,7 +586,7 @@ export default function TromboneSlideSimulator() {
           <button onClick={() => setShowHow((s) => !s)} className="text-sm underline focus:outline-none" style={{ color: COLORS.muted }}>
             {showHow ? "Hide how this works" : "How this works"}
           </button>
-          {showHow && <HowItWorks colors={COLORS} effLength={effLength} nominalExtCm={nominalExtCm} />}
+          {showHow && <HowItWorks colors={COLORS} effLength={effLength} />}
         </div>
 
         {/* Settings */}
@@ -568,22 +598,32 @@ export default function TromboneSlideSimulator() {
             <div className="mt-3 grid gap-4 rounded p-4 text-sm sm:grid-cols-2" style={{ background: COLORS.panel }}>
               <label className="flex items-center justify-between gap-3">
                 <span>F attachment engaged</span>
-                <input type="checkbox" checked={trigger} onChange={(e) => setTrigger(e.target.checked)} style={{ accentColor: COLORS.brass }} />
+                <input
+                  type="checkbox"
+                  checked={trigger}
+                  onChange={(e) => {
+                    setTrigger(e.target.checked);
+                    // The valve unlocks pedals below E1; drop them again when it's released.
+                    if (!e.target.checked) setMidi((m) => Math.max(LOWEST_OPEN_MIDI, m));
+                  }}
+                  style={{ accentColor: COLORS.brass }}
+                />
               </label>
               <label className="flex items-center justify-between gap-3">
                 <span>A4 reference (Hz)</span>
-                <input type="number" value={a4} min={415} max={466} step={1} onChange={(e) => setA4(Number(e.target.value))} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
+                <input type="number" value={a4} min={415} max={466} step={1} onChange={setPositive(setA4)} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
               </label>
               <label className="flex items-center justify-between gap-3">
                 <span>Effective length in 1st position (m)</span>
-                <input type="number" value={effLength} min={2.5} max={3.3} step={0.01} onChange={(e) => setEffLength(Number(e.target.value))} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
+                <input type="number" value={effLength} min={2.5} max={3.3} step={0.01} onChange={setPositive(setEffLength)} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
               </label>
               <label className="flex items-center justify-between gap-3">
                 <span>Maximum slide travel (cm)</span>
-                <input type="number" value={maxExtCm} min={50} max={80} step={1} onChange={(e) => setMaxExtCm(Number(e.target.value))} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
+                <input type="number" value={maxExtCm} min={50} max={80} step={1} onChange={setPositive(setMaxExtCm)} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
               </label>
               <p className="sm:col-span-2" style={{ color: COLORS.muted }}>
-                With these values 1st–2nd is {fmt(nominalExtCm[1])} cm and 7th sits at {fmt(nominalExtCm[6])} cm. See "How this works" for what the effective length means and what the model leaves out.
+                With these values {trigger ? "T1–T2" : "1st–2nd"} is {fmt(nominalExtCm[1])} cm and {trigger ? "T6" : "7th"} sits at{" "}
+                {fmt(nominalExtCm[trigger ? 5 : 6])} cm. See "How this works" for what the effective length means and what the model leaves out.
               </p>
             </div>
           )}
