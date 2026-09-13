@@ -21,7 +21,7 @@ If the file grows much further, split along those lines.
     centsBelowOpen    = 1200 · log2(fOpen / fTarget)
     lengthRatio       = fOpen / fTarget                  = 2^(centsBelowOpen/1200)
     extension         = L0 · (lengthRatio − 1) / 2       half: the slide is a U
-    nominalPosition   = round(centsBelowOpen / 100) + 1
+    nominalPosition   = clamp(round(centsBelowOpen / 100) + 1, 1, 7)
     deltaCents        = centsBelowOpen − 100 · (position − 1)
     deltaCm           = extension − nominalExt(position)
 
@@ -32,6 +32,15 @@ Sign convention: positive `deltaCents`/`deltaCm` means *further out* than the
 equal-tempered mark. A negative extension means the note would need the slide
 inside 1st position; it's listed but flagged unreachable, because that
 information ("lip it up 14¢ or use another partial") is the point of the app.
+A note just past the end of the slide is likewise listed, with how sharp it
+would be with the slide fully out (`centsSharpAtMax`).
+
+Until the user picks a partial, the app shows the lowest reachable one whose
+offset is under `IN_TUNE_CENTS` (20¢). That reproduces the standard position
+chart: the 7th and 11th partials (−31¢, −49¢) are alternates, so G4 defaults
+to 4th on the 8th partial rather than a short 2nd on the 7th, and D5 to 4th
+on the 12th rather than 3rd on the 11th. Plain "lowest reachable" gets those
+four notes (Gb4, G4, D5, Eb5) wrong.
 
 ### Constants worth knowing
 
@@ -40,14 +49,18 @@ information ("lip it up 14¢ or use another partial") is the point of the app.
 | `BB_FUNDAMENTAL_MIDI`  | 34     | Bb1. MIDI 46 is Bb2 — an easy octave slip that halves every partial. |
 | `F_FUNDAMENTAL_MIDI`   | 29     | F1, same octave as above.                                             |
 | `effLength` (default)  | 2.94 m | Acoustic length = c / (2·58.27 Hz). Puts 7th at ≈61 cm.               |
-| `maxExtCm` (default)   | 65     | A little past 7th; T6 (≈65.7 cm) is deliberately just out of reach.   |
+| `maxExtCm` (default)   | 67     | Just past T6 (≈65.7 cm), so low C on the valve is reachable at the end of the slide, as on most tenors; T7 (≈81 cm) is not. At 65 cm the model would call C2 unreachable when it's only 5¢ sharp there. |
 | `MAX_PARTIAL`          | 12     | F5. Higher partials are playable but rarely used on tenor.            |
-| `LOWEST/HIGHEST_MIDI`  | 28/77  | E1 (7th-position pedal) to F5 (12th partial in 1st).                  |
+| `MAX_POSITION`         | 7      | Positions are clamped here; a note beyond 7th reads as "7th, N cm out". |
+| `LOWEST_*_MIDI`        | 28/24  | E1 (7th-position pedal) open, C1 (T6 pedal) with the valve.           |
+| `HIGHEST_MIDI`         | 77     | F5 (12th partial in 1st).                                             |
 
 Sanity check after any change to the acoustics: D4 should list the 5th
 partial at −14¢ (1.2 cm inside 1st, unreachable), the 6th at 4th position
 +2¢, and the 7th at 7th position −31¢. G4 on the 7th partial should be a 2nd
-position 2.6 cm in.
+position 2.8 cm in (not 2.6: the 0.085 cm/¢ slope at 1st position
+underestimates it, since 2nd is wider), and G4 should *default* to the 8th
+partial in 4th. With the valve, C2 should sit at T6, 65.7 cm.
 
 ## Drawing conventions
 
