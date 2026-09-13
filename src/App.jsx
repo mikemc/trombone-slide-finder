@@ -208,6 +208,103 @@ function BassStaffSVG({ midi, colors }) {
   );
 }
 
+// The partial table is computed rather than typed so it can't drift from the
+// model that drives the rest of the page.
+function HowItWorks({ colors, effLength, nominalExtCm }) {
+  const { brass, muted, panel } = colors;
+  const partials = Array.from({ length: MAX_PARTIAL }, (_, i) => {
+    const n = i + 1;
+    const semis = 12 * Math.log2(n);
+    const cents = 100 * (semis - Math.round(semis));
+    return { n, note: midiToName(BB_FUNDAMENTAL_MIDI + Math.round(semis)), cents };
+  });
+  const fmtCents = (c) => (Math.abs(c) < 0.5 ? "0" : `${c > 0 ? "+" : "−"}${Math.abs(c).toFixed(0)}`);
+
+  return (
+    <div id="how-it-works" className="mt-3 space-y-4 rounded p-4 text-sm leading-relaxed" style={{ background: panel }}>
+      <p>
+        A trombone can only sound the <em>partials</em> of its air column: whole-number multiples of a fundamental. With the slide
+        closed that fundamental is Bb1, so the open horn gives Bb1, Bb2, F3, Bb3, D4, F4, Ab4, Bb4, C5, D5, E5, F5. The slide
+        lengthens the column, lowering every partial together; each position is meant to drop the pitch by one semitone.
+      </p>
+
+      <p>
+        The catch is that the harmonic series and the equal-tempered scale don't line up. Some partials fall very close to a
+        scale note (2, 3, 4, 6, 8, 12); others miss by an amount you can hear. Those misses carry over to every slide
+        position, which is why a note like D4 needs the slide slightly in or out depending on which partial you play it on:
+      </p>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left" style={{ fontVariantNumeric: "tabular-nums" }}>
+          <thead style={{ color: muted }}>
+            <tr>
+              <th className="pr-3 font-normal">Partial</th>
+              {partials.map((p) => (
+                <th key={p.n} className="px-1 text-center font-normal">
+                  {p.n}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className="pr-3" style={{ color: muted }}>
+                Note in 1st
+              </td>
+              {partials.map((p) => (
+                <td key={p.n} className="px-1 text-center">
+                  {p.note}
+                </td>
+              ))}
+            </tr>
+            <tr>
+              <td className="pr-3" style={{ color: muted }}>
+                Offset (¢)
+              </td>
+              {partials.map((p) => (
+                <td key={p.n} className="px-1 text-center" style={{ color: Math.abs(p.cents) >= 10 ? brass : undefined }}>
+                  {fmtCents(p.cents)}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>Where the centimetres come from.</strong> Lowering a pitch by <em>n</em> semitones requires the effective tube
+        length to grow by a factor of 2<sup>n/12</sup>, so positions get farther apart as you go out: the distance from 1st to
+        2nd is about {nominalExtCm[1].toFixed(1)} cm, but from 6th to 7th it's {(nominalExtCm[6] - nominalExtCm[5]).toFixed(1)} cm.
+        The slide is a U, so moving your hand 1 cm adds 2 cm of tubing. For a chosen note and partial the app solves for the
+        exact length, converts it to hand travel, and reports both the total extension and the difference from the nearest
+        equal-tempered mark, in centimetres and cents.
+      </p>
+
+      <p>
+        <strong>Effective length.</strong> The {effLength.toFixed(2)} m used here is the <em>acoustic</em> length of the open
+        horn, which is what actually fixes the partial frequencies. It's a bit longer than the physical tubing (roughly 2.75 m
+        on a tenor) because the bell flare makes the instrument behave as though it were longer. This value sets the spacing
+        of every position, which is why it's adjustable: if your 7th sits at 59 cm rather than 61, lower it slightly.
+      </p>
+
+      <p>
+        <strong>F attachment.</strong> Engaging the valve adds tubing that drops the fundamental a fourth to F1, which
+        multiplies the effective length by 2<sup>5/12</sup> ≈ 1.33. The whole position map stretches by the same factor, so
+        trigger positions are wider apart and only six fit on the slide. The app recomputes everything from the F series when
+        the valve is engaged.
+      </p>
+
+      <p style={{ color: muted }}>
+        <strong>What this model ignores.</strong> Real trombones aren't perfect harmonic series: the bell, leadpipe and
+        mouthpiece shift individual partials by a few cents, differently on every instrument. Where 1st position "really" is
+        depends on how the tuning slide is set, and many players keep it slightly out to leave room to adjust inward. Pedal
+        tones (the 1st partial) are especially loose. Treat the direction of each correction as reliable and the exact
+        millimetres as a starting point for your ears.
+      </p>
+    </div>
+  );
+}
+
 // ---------- App ----------
 const COLORS = {
   bg: "#1B2A41",
@@ -230,6 +327,7 @@ export default function TromboneSlideSimulator() {
   const [maxExtCm, setMaxExtCm] = useState(65);
   const [trigger, setTrigger] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHow, setShowHow] = useState(false);
 
   const params = { a4, effLength, maxExt: maxExtCm / 100, trigger };
   const { candidates, nominalExt, fTarget } = useMemo(() => analyseNote(midi, params), [midi, a4, effLength, maxExtCm, trigger]);
@@ -453,8 +551,16 @@ export default function TromboneSlideSimulator() {
           </section>
         </div>
 
-        {/* Settings */}
+        {/* Explanation */}
         <div className="mt-8">
+          <button onClick={() => setShowHow((s) => !s)} className="text-sm underline focus:outline-none" style={{ color: COLORS.muted }}>
+            {showHow ? "Hide how this works" : "How this works"}
+          </button>
+          {showHow && <HowItWorks colors={COLORS} effLength={effLength} nominalExtCm={nominalExtCm} />}
+        </div>
+
+        {/* Settings */}
+        <div className="mt-4">
           <button onClick={() => setShowSettings((s) => !s)} className="text-sm underline focus:outline-none" style={{ color: COLORS.muted }}>
             {showSettings ? "Hide instrument settings" : "Instrument settings"}
           </button>
@@ -477,7 +583,7 @@ export default function TromboneSlideSimulator() {
                 <input type="number" value={maxExtCm} min={50} max={80} step={1} onChange={(e) => setMaxExtCm(Number(e.target.value))} className="w-20 rounded px-2 py-1" style={{ background: COLORS.bg, color: COLORS.ink }} />
               </label>
               <p className="sm:col-span-2" style={{ color: COLORS.muted }}>
-                Positions assume equal temperament and an ideal harmonic series. Real horns stray a few cents on some partials (and the tuning slide sets where 1st truly sits), so treat the cm values as a starting point and the direction of the correction as the reliable part. With these defaults 1st–2nd is {fmt(nominalExtCm[1])} cm and 7th sits at {fmt(nominalExtCm[6])} cm.
+                With these values 1st–2nd is {fmt(nominalExtCm[1])} cm and 7th sits at {fmt(nominalExtCm[6])} cm. See "How this works" for what the effective length means and what the model leaves out.
               </p>
             </div>
           )}
